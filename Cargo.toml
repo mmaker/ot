@@ -13,7 +13,10 @@ generic-array = "0.12.0"
 
 [dev-dependencies]
 criterion = "0.2"
-sha2 = "0.8.0"
+sha3 = "0.8.1"
+
+[patch.crates-io]
+criterion = { git = "https://github.com/hdevalence/criterion.rs" }
 
 [[bench]]
 name = "ot_benchmarks"

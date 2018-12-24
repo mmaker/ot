@@ -4,7 +4,7 @@ extern crate digest;
 extern crate generic_array;
 
 #[cfg(test)]
-extern crate sha2;
+extern crate sha3;
 
 use rand::{CryptoRng, Rng};
 
@@ -105,7 +105,7 @@ impl Receiver {
 mod tests {
     use super::{Sender, Receiver};
     use rand::rngs::OsRng;
-    use sha2::Sha256;
+    use sha3::Sha3_256;
 
     #[test]
     fn test_ot() {
@@ -116,8 +116,8 @@ mod tests {
         for choice in 0 .. n {
             let (receiver, r) = Receiver::new(&mut csprng, choice, &s).unwrap();
 
-            let secret_s = sender.keys::<Sha256>(&r, n).unwrap();
-            let secret_r = receiver.key::<Sha256>();
+            let secret_s = sender.keys::<Sha3_256>(&r, n).unwrap();
+            let secret_r = receiver.key::<Sha3_256>();
 
             assert_eq!(secret_r, secret_s[choice as usize]);
         }

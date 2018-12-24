@@ -1,18 +1,18 @@
 #[macro_use]
 extern crate criterion;
 extern crate rand;
-extern crate sha2;
+extern crate sha3;
 
 extern crate ot_dalek;
 
 use criterion::Criterion;
-use rand::rngs::OsRng;
+use rand::thread_rng;
 use ot_dalek::{Sender, Receiver};
-use sha2::Sha256;
+use sha3::Sha3_256;
 
 fn bench_sender_new(c: &mut Criterion) {
     c.bench_function("sender setup", move |b| {
-        let mut csprng = OsRng::new().unwrap();
+        let mut csprng = thread_rng();
         b.iter(|| {
             Sender::new(&mut csprng);
         })
@@ -21,24 +21,24 @@ fn bench_sender_new(c: &mut Criterion) {
 
 fn bench_sender_keys(c: &mut Criterion) {
     c.bench_function("sender keys", move |b| {
-        let mut csprng = OsRng::new().unwrap();
+        let mut csprng = thread_rng();
         let (sender, s) = Sender::new(&mut csprng);
         let (_receiver, r) = Receiver::new(&mut csprng, 1, &s).unwrap();
 
         b.iter(|| {
-            let _keys = sender.keys::<Sha256>(&r, 2);
+            let _keys = sender.keys::<Sha3_256>(&r, 2);
         })
     });
 }
 
 fn bench_receiver(c: &mut Criterion) {
     c.bench_function("receiver", move |b| {
-        let mut csprng = OsRng::new().unwrap();
+        let mut csprng = thread_rng();
         let (_sender, s) = Sender::new(&mut csprng);
 
         b.iter(|| {
-            let (receiver, _r) = Receiver::new(&mut csprng, 1, &s).unwrap();
-            receiver.key::<Sha256>();
+            let (receiver, _r) = Receiver::new(&mut csprng, 0, &s).unwrap();
+            receiver.key::<Sha3_256>();
         })
     });
 }
