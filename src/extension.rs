@@ -1,8 +1,7 @@
 // XXX: check architecture
 use packed_simd::*;
-use byteorder::{NativeEndian, BigEndian, LittleEndian, ByteOrder};
+use byteorder::{NativeEndian, ByteOrder};
 use std::ops::{BitXorAssign, BitAndAssign};
-
 
 use std::arch::x86_64::_mm256_movemask_epi8;
 
@@ -46,11 +45,11 @@ impl<E: AsRef<[u8]>> Iterator for BitIterator<E> {
 pub struct Bits<E: AsRef<[u8]>> (E);
 
 impl<E: AsRef<[u8]>> Bits<E> {
-    fn new(v: E) -> Self {
+    pub fn new(v: E) -> Self {
         Bits(v)
     }
 
-    fn iter(self) -> BitIterator<E> {
+    pub fn iter(self) -> BitIterator<E> {
         BitIterator::new(self.0)
     }
 }
@@ -143,6 +142,68 @@ pub fn transpose256x256(dst: &mut [u8], src: &[u8]) {
             let b = get_bit(src, i * 256 + j);
             set_bit(dst, j * 256 + i, b)
         }
+    }
+}
+
+#[inline]
+fn interleave_left(l: u8x32, r: u8x32) -> u8x32 {
+    shuffle!(l, r, [0, 32, 1, 33, 2, 34, 3, 35, 4, 36, 5, 37, 6, 38, 7, 39, 8, 40, 9, 41, 10, 42, 11, 43, 12, 44, 13, 45, 14, 46, 15, 47])
+}
+
+
+#[inline]
+fn interleave_right(l: u8x32, r: u8x32) -> u8x32 {
+    shuffle!(l, r, [16, 48, 17, 49, 18, 50, 19, 51, 20, 52, 21, 53, 22, 54, 23, 55, 24, 56, 25, 57, 26, 58, 27, 59, 28, 60, 29, 61, 30, 62, 31, 63])
+}
+
+
+
+#[inline]
+fn transpose256_round(src: &[u8], dst: &mut [u8]) {
+    assert_eq!(src.len() % (32*2), 0);
+    let half: usize = src.len() / 2;
+
+    for i in (0 .. half).step_by(32) {
+        let r0 = u8x32::from_slice_unaligned(&src[i .. i+32]);
+        let r1 = u8x32::from_slice_unaligned(&src[half+i .. half+i+32]);
+
+        let t0 = interleave_left(r0, r1);
+        let t1 = interleave_right(r0, r1);
+
+        t0.write_to_slice_unaligned(&mut dst[2*i .. 2*i+32]);
+        t1.write_to_slice_unaligned(&mut dst[2*i+32 .. 2*i+64]);
+    }
+}
+
+#[inline]
+fn transpose128x256_bytes(m: &mut [u8]) {
+    let n = &mut [0u8; 128*32];
+    n.clone_from_slice(m);
+
+    transpose256_round(n, m);
+    transpose256_round(m, n);
+    transpose256_round(n, m);
+    transpose256_round(m, n);
+    transpose256_round(n, m);
+    transpose256_round(m, n);
+    transpose256_round(n, m);
+}
+
+
+pub fn transpose128x256(m: &mut [u8]) {
+
+    transpose128x256_bytes(m);
+
+    let mut chunk = [0i32; 8];
+    for i in 0 .. 32 {
+        let mut t0 = u8x32::from_slice_unaligned(&m[i*32 .. i*32+32]);
+
+        chunk[7] = movemask8x32(t0);
+        for j in (0 .. 7).rev() {
+            t0 <<= 1;
+            chunk[j] = movemask8x32(t0);
+        }
+        NativeEndian::write_i32_into(&chunk, &mut m[i*32 .. i*32+32])
     }
 }
 
@@ -277,5 +338,53 @@ mod tests {
         simd_transpose256x256(&mut got, &a);
         transpose256x256(&mut expected, &a);
         assert!((0 .. 256*256).all(|i| get_bit(&got, i) == get_bit(&expected, i)));
+    }
+
+    #[test]
+    fn test_interleave() {
+        let a : Vec<_> = (0u8 .. 32u8).collect();
+        let a = u8x32::from_slice_unaligned(&a);
+
+        let b : Vec<_> = (32u8 .. 64u8).collect();
+        let b = u8x32::from_slice_unaligned(&b);
+
+
+        let got = interleave_left(a, b);
+        assert_eq!(got.extract(0), 0);
+        assert_eq!(got.extract(1), 32);
+        assert_eq!(got.extract(2), 1);
+        assert_eq!(got.extract(31), 32+16-1);
+    }
+
+    #[test]
+    fn test_transpose128x256() {
+        let mut a = [0u8; 128*32];
+        let mut prng = thread_rng();
+
+        // first test interleave acts correctly on a single round.
+        a[0] = 1;
+        a[a.len() / 2] = 1;
+        a[1] = 1;
+        let b = a.clone();
+        transpose256_round(&b, &mut a);
+        assert_eq!(a[0], 1);
+        assert_eq!(a[1], 1);
+        assert_eq!(a[2], 1);
+
+        // then test transpose bytes acts correctly
+        prng.fill_bytes(&mut a);
+        let b = a.clone();
+        transpose128x256_bytes(&mut a);
+        assert_eq!(a[0], b[0]);
+        assert_eq!(a[1], b[32]);
+        assert_eq!(a[2], b[64]);
+
+        // finally, test bit transposition.
+        prng.fill_bytes(&mut a);
+        let b = a.clone();
+        transpose128x256(&mut a);
+        assert_eq!(get_bit(&a, 0), get_bit(&b, 0));
+        assert_eq!(get_bit(&a, 1), get_bit(&b, 256));
+        assert_eq!(get_bit(&a, 2), get_bit(&b, 512));
     }
 }

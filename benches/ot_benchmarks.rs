@@ -10,6 +10,7 @@ use rand::{thread_rng, RngCore};
 use ot_dalek::{Sender, Receiver};
 use sha3::Sha3_256;
 
+
 fn bench_sender_new(c: &mut Criterion) {
     c.bench_function("sender setup", move |b| {
         let mut csprng = thread_rng();
@@ -45,16 +46,15 @@ fn bench_receiver(c: &mut Criterion) {
 
 
 fn bench_transpose(c: &mut Criterion) {
-    use ot_dalek::extension::simd_transpose256x256;
+    use ot_dalek::extension::transpose128x256;
 
     c.bench_function("transpose", move |b| {
         let mut rng = thread_rng();
-        let mut src = [0u8; 256 * 32];
-        let mut dst = [0u8; 256 * 32];
+        let mut src = [0u8; 128 * 32];
         rng.fill_bytes(&mut src);
 
         b.iter(|| {
-            simd_transpose256x256(&mut dst, &src);
+            transpose128x256(&mut src);
         })
     });
 }
