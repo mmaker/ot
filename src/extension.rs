@@ -123,7 +123,6 @@ impl<L, R> BitAndAssign<Bits<R>> for Bits<L> where
 }
 
 
-
 fn get_bit(src: &[u8], i: usize) -> u8 {
     (src[i / 8] & (1 << (i % 8)) != 0) as u8
 }
@@ -134,15 +133,6 @@ fn set_bit(dst: &mut [u8], i: usize, b: u8) {
     } else {
         dst[i / 8] &= !(1 << (i % 8));
         }
-}
-
-pub fn transpose256x256(dst: &mut [u8], src: &[u8]) {
-    for i in 0 .. 256 {
-        for j in 0 .. 256 {
-            let b = get_bit(src, i * 256 + j);
-            set_bit(dst, j * 256 + i, b)
-        }
-    }
 }
 
 #[inline]
@@ -178,8 +168,11 @@ fn transpose256_round(src: &[u8], dst: &mut [u8]) {
 #[inline]
 fn transpose128x256_bytes(m: &mut [u8]) {
     let n = &mut [0u8; 128*32];
+    // the following line is costing us +300 cycles.
+    // XXX. make transpose256_round inplace.
     n.clone_from_slice(m);
 
+    // 128.log2() rounds will bring us to the permutation we want
     transpose256_round(n, m);
     transpose256_round(m, n);
     transpose256_round(n, m);
@@ -191,7 +184,6 @@ fn transpose128x256_bytes(m: &mut [u8]) {
 
 
 pub fn transpose128x256(m: &mut [u8]) {
-
     transpose128x256_bytes(m);
 
     let mut chunk = [0i32; 8];
@@ -206,56 +198,6 @@ pub fn transpose128x256(m: &mut [u8]) {
         NativeEndian::write_i32_into(&chunk, &mut m[i*32 .. i*32+32])
     }
 }
-
-pub fn simd_transpose256x256(dst: &mut [u8], src: &[u8]) {
-    assert_eq!(src.len(), 32 * 256);
-
-    for l in 0 .. 8 {
-        for i in 0 .. 256/8 {
-            let mut t0 = u8x32::new(
-                src[i + 32*0 + 1024*l],
-                src[i + 32*1 + 1024*l],
-                src[i + 32*2 + 1024*l],
-                src[i + 32*3 + 1024*l],
-                src[i + 32*4 + 1024*l],
-                src[i + 32*5 + 1024*l],
-                src[i + 32*6 + 1024*l],
-                src[i + 32*7 + 1024*l],
-                src[i + 32*8 + 1024*l],
-                src[i + 32*9 + 1024*l],
-                src[i + 32*10 + 1024*l],
-                src[i + 32*11 + 1024*l],
-                src[i + 32*12 + 1024*l],
-                src[i + 32*13 + 1024*l],
-                src[i + 32*14 + 1024*l],
-                src[i + 32*15 + 1024*l],
-                src[i + 32*16 + 1024*l],
-                src[i + 32*17 + 1024*l],
-                src[i + 32*18 + 1024*l],
-                src[i + 32*19 + 1024*l],
-                src[i + 32*20 + 1024*l],
-                src[i + 32*21 + 1024*l],
-                src[i + 32*22 + 1024*l],
-                src[i + 32*23 + 1024*l],
-                src[i + 32*24 + 1024*l],
-                src[i + 32*25 + 1024*l],
-                src[i + 32*26 + 1024*l],
-                src[i + 32*27 + 1024*l],
-                src[i + 32*28 + 1024*l],
-                src[i + 32*29 + 1024*l],
-                src[i + 32*30 + 1024*l],
-                src[i + 32*31 + 1024*l]
-            );
-
-            for j in (0 .. 8).rev() {
-                let got = [movemask8x32(t0)];
-                t0 <<= 1;
-                NativeEndian::write_i32_into(&got, &mut dst[j*32+i*8*32+l*4.. i*8*32+j*32+l*4+4]);
-            }
-        }
-    }
-}
-
 
 #[cfg(test)]
 mod tests {
@@ -295,49 +237,6 @@ mod tests {
         assert_eq!(get_bit(&a, 9), 0);
         set_bit(&mut a, 7, 0);
         assert_eq!(get_bit(&a, 7), 0);
-    }
-
-
-    #[test]
-    fn test_transpose() {
-        // transpose the identity matrix
-        let mut a = [0u8; 256 * 256 / 8];
-        let mut b = [0u8; 256 * 256 / 8];
-        for i in 0 .. 256 {
-            set_bit(&mut a,  i * 256 + i, 1);
-        }
-
-        transpose256x256(&mut b, &a);
-        for i in 0 .. 256 {
-            assert_eq!(get_bit(&b, i*256+i), 1)
-        }
-    }
-
-    #[test]
-    fn test_simd_transpose() {
-        // test with the identity matrix.
-        let mut a = [0u8; 256 * 32];
-        let mut got = [0u8; 256 * 32];
-
-        for i in 0 .. 256 {
-            set_bit(&mut a,  i * 256 + i, 1);
-        }
-        set_bit(&mut a, 256, 1);
-
-        simd_transpose256x256(&mut got, &a);
-        assert_eq!(get_bit(&got, 0), 1);
-        assert_eq!(get_bit(&got, 256 + 1), 1);
-        assert_eq!(get_bit(&got, 1), 1);
-        assert_eq!(get_bit(&got, 256*32 + 32), 1);
-        assert!((0 .. 256).all(|i| get_bit(&got, i*256 + i) == 1));
-
-        // test with a randomly generated matrix and compare with the naive algorithm.
-        let mut expected = [0u8; 256 * 32];
-        let mut prng = thread_rng();
-        prng.fill_bytes(&mut a);
-        simd_transpose256x256(&mut got, &a);
-        transpose256x256(&mut expected, &a);
-        assert!((0 .. 256*256).all(|i| get_bit(&got, i) == get_bit(&expected, i)));
     }
 
     #[test]
