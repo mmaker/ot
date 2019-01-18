@@ -2,6 +2,7 @@ extern crate curve25519_dalek;
 extern crate rand;
 extern crate digest;
 extern crate generic_array;
+#[macro_use(shuffle)]
 extern crate packed_simd;
 extern crate byteorder;
 
