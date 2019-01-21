@@ -46,7 +46,7 @@ fn bench_receiver(c: &mut Criterion) {
 
 
 fn bench_transpose(c: &mut Criterion) {
-    use ot_dalek::extension::transpose128x256;
+    use ot_dalek::extension::transpose256;
 
     c.bench_function("transpose", move |b| {
         let mut rng = thread_rng();
@@ -54,7 +54,7 @@ fn bench_transpose(c: &mut Criterion) {
         rng.fill_bytes(&mut src);
 
         b.iter(|| {
-            transpose128x256(&mut src);
+            transpose256(&mut src);
         })
     });
 }

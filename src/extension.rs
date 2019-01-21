@@ -45,38 +45,77 @@ fn transpose256_round(src: &[u8], dst: &mut [u8]) {
 }
 
 #[inline]
-fn transpose128x256_bytes(m: &mut [u8]) {
-    let n = &mut [0u8; 128*32];
-    // the following line is costing us +300 cycles.
-    // XXX. make transpose256_round inplace.
-    n.clone_from_slice(m);
+fn transpose256_round_inplace(dst: &mut [u8]) {
+    assert_eq!(dst.len() % (32*2), 0);
+    let half: usize = dst.len() / 2;
+    let l : usize = 32;
 
-    // 128.log2() rounds will bring us to the permutation we want
-    transpose256_round(n, m);
-    transpose256_round(m, n);
-    transpose256_round(n, m);
-    transpose256_round(m, n);
-    transpose256_round(n, m);
-    transpose256_round(m, n);
-    transpose256_round(n, m);
-}
+    // Copy the first half of the matrix:
+    // when interleaving we write two consecutive rows, but we read only one.
+    let mut src =  [0u8; 32*64];
+    src.clone_from_slice(&dst[ .. half]);
 
+    for i in (0 .. half).step_by(l) {
+        let r0 = u8x32::from_slice_unaligned(&src[i .. i+32]);
+        let r1 = u8x32::from_slice_unaligned(&dst[half+i .. half+i+32]);
 
-pub fn transpose128x256(m: &mut [u8]) {
-    transpose128x256_bytes(m);
+        let t0 = interleave_left(r0, r1);
+        let t1 = interleave_right(r0, r1);
 
-    let mut chunk = [0i32; 8];
-    for i in 0 .. 32 {
-        let mut t0 = u8x32::from_slice_unaligned(&m[i*32 .. i*32+32]);
-
-        chunk[7] = movemask8x32(t0);
-        for j in (0 .. 7).rev() {
-            t0 <<= 1;
-            chunk[j] = movemask8x32(t0);
-        }
-        NativeEndian::write_i32_into(&chunk, &mut m[i*32 .. i*32+32])
+        t0.write_to_slice_unaligned(&mut dst[2*i .. 2*i+32]);
+        t1.write_to_slice_unaligned(&mut dst[2*i+32 .. 2*i+l+32]);
     }
 }
+
+#[inline]
+fn transpose256_bytes(m: &mut [u8]) {
+
+    // 128.log2() rounds will bring us to the permutation we want
+    for _i in 0 .. 7 {
+       transpose256_round_inplace(m);
+    }
+
+    // let mut n = [0u8; 128*32];
+    // n.clone_from_slice(&m);
+    // transpose256_round(&n, m);
+    // transpose256_round(&m, &mut n);
+    // transpose256_round(&n, m);
+    // transpose256_round(&m, &mut n);
+    // transpose256_round(&n, m);
+    // transpose256_round(&m, &mut n);
+    // transpose256_round(&n, m);
+
+}
+
+
+pub fn transpose256(m: &mut [u8]) {
+    // transpose byte-wise. We are left with a 256x128 byte matrix
+    transpose256_bytes(m);
+
+    // We are left with transposing 1x8 bit matrices.
+    // We do so in chunks of one row
+    for i in (0 ..  128*32).step_by(128) {
+        let mut t0 = u8x32::from_slice_unaligned(&m[i .. i+32]);
+        let mut t1 = u8x32::from_slice_unaligned(&m[i+32 .. i+64]);
+        let mut t2 = u8x32::from_slice_unaligned(&m[i+64 .. i+96]);
+        let mut t3 = u8x32::from_slice_unaligned(&m[i+96 .. i+128]);
+
+        let mut chunks = [0i32; 32];
+        for j in (0 .. 8) {
+            chunks[j*4 + 0] = movemask8x32(t0);
+            chunks[j*4 + 1] = movemask8x32(t1);
+            chunks[j*4 + 2] = movemask8x32(t2);
+            chunks[j*4 + 3] = movemask8x32(t3);
+
+            t0 <<= 1;
+            t1 <<= 1;
+            t2 <<= 1;
+            t3 <<= 1;
+        }
+        NativeEndian::write_i32_into(&chunks[..], &mut m[i .. i+128]);
+    }
+}
+
 
 fn xor3(t0: &mut [u8], t1: &[u8], t2: &[u8]) {
     for i in (0 .. t0.len()).step_by(32 * 4) {
@@ -185,71 +224,108 @@ mod tests {
     use rand::{RngCore, thread_rng};
 
     fn get_bit(src: &[u8], i: usize) -> u8 {
-        (src[i / 8] & (1 << (i % 8)) != 0) as u8
+        let byte = src[i / 8];
+        let bit_pos = 7 - (i % 8);
+        (byte & (1 << bit_pos) != 0) as u8
     }
 
     fn set_bit(dst: &mut [u8], i: usize, b: u8) {
+        let bit_pos = i % 8;
         if b == 1 {
-            dst[i / 8] |= 1 << (i % 8);
+            dst[i / 8] |= 1 << bit_pos;
         } else {
-            dst[i / 8] &= !(1 << (i % 8));
+            dst[i / 8] &= !(1 << bit_pos);
         }
     }
 
     #[test]
-    fn test_set_get_bit() {
-        let mut a = [0xffu8, 0x00];
-        assert_eq!(get_bit(&a, 7), 1);
-        assert_eq!(get_bit(&a, 9), 0);
-        set_bit(&mut a, 7, 0);
-        assert_eq!(get_bit(&a, 7), 0);
-    }
-
-    #[test]
     fn test_interleave() {
-        let a : Vec<_> = (0u8 .. 32u8).collect();
-        let a = u8x32::from_slice_unaligned(&a);
+        use std::io::Read;
 
-        let b : Vec<_> = (32u8 .. 64u8).collect();
-        let b = u8x32::from_slice_unaligned(&b);
-
-
-        let got = interleave_left(a, b);
-        assert_eq!(got.extract(0), 0);
-        assert_eq!(got.extract(1), 32);
-        assert_eq!(got.extract(2), 1);
-        assert_eq!(got.extract(31), 32+16-1);
+        let test =
+            b"\xc1i3\xf6\xbe1\xcc\xfd0f\xa9>%\xb7\x8a\xf8,\x08t\x9e\xe7\xc9$\xb8\xec\xfbZTsN\
+              \x1c\xc4\x01\xe7\xe0\x19\xfa\x07@N\xb5\x7fIl\x8e\xeb\xb4N\xd6\xf4Q\x94^GlG\xe3\
+              {\x16\xe9\xa3\xa9\xde\x08";
+        let expected =
+            b"\xc1\x01i\xe73\xe0\xf6\x19\xbe\xfa1\x07\xcc@\xfdN0\xb5f\x7f\xa9I>l%\x8e\xb7\xeb\
+              \x8a\xb4\xf8N,\xd6\x08\xf4tQ\x9e\x94\xe7^\xc9G$l\xb8G\xec\xe3\xfb{Z\x16T\xe9s\xa3\
+              N\xa9\x1c\xde\xc4\x08";
+        let mut got = [0u8; 64];
+        let a = u8x32::from_slice_unaligned(&test[ .. 32]);
+        let b = u8x32::from_slice_unaligned(&test[32 .. ]);
+        interleave_left(a, b).write_to_slice_unaligned(&mut got[ .. 32]);
+        interleave_right(a, b).write_to_slice_unaligned(&mut got[32 ..]);
+        assert_eq!(&got[..], &expected[..]);
     }
 
     #[test]
-    fn test_transpose128x256() {
+    fn test_transpose_round() {
+        let mut test : Vec<u8> =
+            b"Q)FSg\xedb\x02\'q\xdd\x9c\x8e\x12\x1d\xf9\x08\xe66\xf9\x1d\xf1\x90:b\x9fi_\xe3yf\
+              \xff\x10\xdf\xd3r\xea\"\xd5f\xe0\x98{\xd9\x9ffb*\xe8\xda5kwe\xf8H2\x0e\xdf/\xc9i\
+              \xd5\xa0\xdbHD\x15\ns~\xaa1\xfe\x86H\xa9.\x89\xa2\x03\x86\xef\xc6\xd3\x19D\xed\xab\
+              \x16\xfbh\xee\xf9\x0e\xbeI\x17\x04)\xca\xac\x07\xd0V-\xe6v|G\\\xff\xd5B\x08\xddM\xf2\
+              \nd\x85\xfe@\xe9\xfc\xab\xf4N".into_iter().cloned().cycle().take(32 * 128).collect();
+        let expected =
+            b"QQ))FFSSgg\xed\xedbb\x02\x02\'\'qq\xdd\xdd\x9c\x9c\x8e\x8e\x12\x12\x1d\x1d\xf9\xf9\x08\
+            \x08\xe6\xe666\xf9\xf9\x1d\x1d\xf1\xf1\x90\x90::bb\x9f\x9fii__\xe3\xe3yyff\xff\xff\x10\
+            \x10\xdf\xdf\xd3\xd3rr\xea\xea\"\"\xd5\xd5ff\xe0\xe0\x98\x98{{\xd9\xd9\x9f\x9fffbb**\xe8\
+            \xe8\xda\xda55kkwwee\xf8\xf8HH22\x0e\x0e\xdf\xdf//\xc9\xc9ii\xd5\xd5\xa0\xa0\xdb\xdbHHDD\
+            \x15\x15\n\nss~~\xaa\xaa11\xfe\xfe\x86\x86HH\xa9\xa9..\x89\x89\xa2\xa2\x03\x03\x86\x86\xef\
+            \xef\xc6\xc6\xd3\xd3\x19\x19DD\xed\xed\xab\xab\x16\x16\xfb\xfbhh\xee\xee\xf9\xf9\x0e\x0e\xbe\
+            \xbeII\x17\x17\x04\x04))\xca\xca\xac\xac\x07\x07\xd0\xd0VV--\xe6\xe6vv||GG\\\\\xff\xff\xd5\xd5\
+            BB\x08\x08\xdd\xddMM\xf2\xf2\n\ndd\x85\x85\xfe\xfe@@\xe9\xe9\xfc\xfc\xab\xab\xf4\xf4NN";
+        transpose256_round_inplace(&mut test);
+        assert_eq!(&test[.. 256], &expected[.. 256]);
+    }
+
+    fn transpose256_bytes_naif(dst: &mut [u8], src: &[u8]) {
+        assert!(src.len() % 32 == 0);
+        let r = src.len() / 32;
+
+        for (i, &x) in src.iter().enumerate() {
+            let (row, col) = (i / 32, i % 32);
+            dst[col * r + row] = x;
+        }
+    }
+
+    #[test]
+    fn test_transpose256_bytes() {
         let mut a = [0u8; 128*32];
         let mut prng = thread_rng();
 
-        // first test interleave acts correctly on a single round.
-        a[0] = 1;
-        a[a.len() / 2] = 1;
-        a[1] = 1;
-        let b = a.clone();
-        transpose256_round(&b, &mut a);
-        assert_eq!(a[0], 1);
-        assert_eq!(a[1], 1);
-        assert_eq!(a[2], 1);
-
         // then test transpose bytes acts correctly
         prng.fill_bytes(&mut a);
-        let b = a.clone();
-        transpose128x256_bytes(&mut a);
-        assert_eq!(a[0], b[0]);
-        assert_eq!(a[1], b[32]);
-        assert_eq!(a[2], b[64]);
+        let mut b = [0u8; 128*32];
+        transpose256_bytes_naif(&mut b, &a);
+        transpose256_bytes(&mut a);
+        assert_eq!(&a[..], &b[..]);
 
-        // finally, test bit transposition.
-        prng.fill_bytes(&mut a);
-        let b = a.clone();
-        transpose128x256(&mut a);
-        assert_eq!(get_bit(&a, 0), get_bit(&b, 0));
-        assert_eq!(get_bit(&a, 1), get_bit(&b, 256));
-        assert_eq!(get_bit(&a, 2), get_bit(&b, 512));
+    }
+
+    fn transpose256_naif(dst: &mut [u8], src: &[u8]) {
+        assert!(src.len() % 32 == 0);
+        let l = src.len() * 8;
+        let r = l / 256;
+
+        for i in 0 .. l {
+            let bit = get_bit(src, i);
+            let (row, col) = (i / 256, i % 256);
+            set_bit(dst, col * r + row, bit);
+        }
+    }
+
+    #[test]
+    fn test_transpose256() {
+        let mut a = [0u8; 128*32];
+        let mut prng = thread_rng();
+
+        // then test transpose bytes acts correctly
+        prng.fill_bytes(&mut a[..]);
+        let mut b = [0u8; 128*32];
+        transpose256_naif(&mut b, &a);
+        transpose256(&mut a);
+        assert_eq!(&a[.. 64], &b[..64]);
+
     }
 }
