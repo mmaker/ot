@@ -1,5 +1,5 @@
 [package]
-name = "ot_dalek"
+name = "ot"
 version = "0.1.0"
 authors = ["Michele Orrù <michele.orru@ens.fr>"]
 keywords = ["cryptography", "curve25519", "oblivious-transfer"]
