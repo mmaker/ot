@@ -4,7 +4,6 @@ use std::arch::x86_64::_mm256_movemask_epi8;
 // XXX: we're assuming it's LittleEndian
 use byteorder::{NativeEndian, ByteOrder};
 use packed_simd::u8x32;
-use digest::Digest;
 use rand::{CryptoRng, Rng};
 
 use crate::{Sender, Receiver};
