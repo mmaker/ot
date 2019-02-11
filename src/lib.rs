@@ -21,6 +21,7 @@ use digest::Digest;
 use generic_array::GenericArray;
 
 pub mod extension;
+pub mod ecc;
 
 pub struct Sender {
     s_bytes: [u8; 32],
