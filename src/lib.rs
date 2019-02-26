@@ -5,11 +5,12 @@ extern crate generic_array;
 #[macro_use(shuffle)]
 extern crate packed_simd;
 extern crate byteorder;
+extern crate aes_ctr;
 
 #[cfg(test)]
 extern crate sha3;
 
-use rand::{CryptoRng, Rng};
+use rand::{CryptoRng, RngCore};
 
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::constants;
@@ -31,7 +32,7 @@ pub struct Sender {
 
 impl Sender {
     pub fn new<R>(csprng: &mut R) -> (Self, [u8; 32])
-        where R: CryptoRng + Rng
+        where R: CryptoRng + RngCore
     {
         let y = Scalar::random(csprng);
         let s = &y * &constants::RISTRETTO_BASEPOINT_TABLE;
@@ -76,7 +77,7 @@ pub struct Receiver {
 
 impl Receiver {
     pub fn new<R>(csprng: &mut R, choice: usize, s_bytes: &[u8; 32]) -> Option<(Self, [u8; 32])>
-        where R: Rng + CryptoRng
+        where R: RngCore + CryptoRng
     {
         let s = CompressedRistretto::from_slice(s_bytes).decompress()?;
         let choice = Scalar::from(choice as u64);

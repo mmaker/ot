@@ -1,12 +1,10 @@
 // XXX: check architecture
 use std::arch::x86_64::_mm256_movemask_epi8;
 
-// XXX: we're assuming it's LittleEndian
-use byteorder::{NativeEndian, ByteOrder};
+use byteorder::{LittleEndian, ByteOrder};
 use packed_simd::u8x32;
 use rand::{CryptoRng, Rng};
 
-use crate::{Sender, Receiver};
 
 
 #[inline]
@@ -70,10 +68,12 @@ fn transpose_round_inplace(dst: &mut [u8]) {
     }
 }
 
+use aes_ctr::Aes128Ctr;
+
 #[inline]
-fn transpose_u8(m: &mut [u8]) {
-    // 128.log2() rounds will bring us to the permutation we want
-    for _i in 0 .. 7 {
+fn transpose_u8(m: &mut [u8], rounds: usize) {
+    // 2^rounds is the number of rows.
+    for _i in 0 .. rounds {
        transpose_round_inplace(m);
     }
 }
@@ -81,7 +81,7 @@ fn transpose_u8(m: &mut [u8]) {
 
 pub fn transpose128(m: &mut [u8]) {
     // transpose byte-wise. We are left with a 256x128 byte matrix
-    transpose_u8(m);
+    transpose_u8(m, 7);
 
     // let mut time = unsafe { -std::arch::x86_64::_rdtsc() };
     // … code …
@@ -108,7 +108,7 @@ pub fn transpose128(m: &mut [u8]) {
             t2 <<= 1;
             t3 <<= 1;
         }
-        NativeEndian::write_i32_into(&chunks[..], &mut m[i .. i+128]);
+        LittleEndian::write_i32_into(&chunks[..], &mut m[i .. i+128]);
     }
 }
 
@@ -141,78 +141,16 @@ fn xor3(t0: &mut [u8], t1: &[u8], t2: &[u8]) {
 }
 
 
-pub struct ReceiverExt(Sender);
-pub struct SenderExt(Receiver);
+use aes_ctr::stream_cipher::{NewStreamCipher, SyncStreamCipher};
+use generic_array::GenericArray;
+use digest::Digest;
 
-impl ReceiverExt {
-    pub fn new<R>(csprng: &mut R) -> (Self, [u8; 32])
-        where R: CryptoRng + Rng
-    {
-        let (sender, s) = Sender::new(csprng);
-        (ReceiverExt(sender), s)
-    }
-
-    fn key_decompress(dst: &mut [u8], key: &[u8]) {
-        let one = u8x32::splat(0xff);
-
-        for (i, &k) in (0 .. 128).zip(key) {
-            (k * one).write_to_slice_unaligned(&mut dst[i*32 .. i*32+32]);
-        }
-    }
-
-    // pub fn keys<D>(&self, r_bytes: &[u8], c8: &[u8]) -> Option<Vec<[u8; 16]>>
-    //     where D: Digest + Default
-    // {
-    //     if r_bytes.len() != 128 * 32 {
-    //         return None;
-    //     }
-
-    //     let mut t0 = [0u8; 32*128];
-    //     let mut t1 = [0u8; 32*128];
-    //     let mut choices = [0u8; 32*128];
-
-    //     Self::key_decompress(&mut choices, c8);
-    //     for i in 0 .. 128 {
-    //         let keys = self.0.keys::<D>(&r_bytes[i*32 .. i*32+32], c8[i] as usize)?;
-
-    //         t0[i*32 .. i*32+32].copy_from_slice(keys[0].as_slice());
-    //         t1[i*32 .. i*32+32].copy_from_slice(keys[1].as_slice());
-    //     }
-
-    //     xor3(&mut t0, &t1, &choices);
-    //     transpose128x256(&mut t0);
-
-    //     let mut chunks : Vec<[u8; 16]>= vec![[0u8; 16]; 32];
-    //     for (i, chunk) in t0.chunks(16).enumerate() {
-    //         chunks[i].copy_from_slice(chunk)
-    //     }
-    //     Some(chunks)
-    // }
+fn extend(k: &[u8], dst: &mut [u8]) {
+    let key = GenericArray::from_slice(&k[.. 16]);
+    let nonce = GenericArray::from_slice(&k[16 .. 32]);
+    let mut cipher = Aes128Ctr::new(key, nonce);
+    cipher.apply_keystream(dst);
 }
-
-// fn addmul(mut key: u128, u: &[u8], t: &mut [u8]) {
-//     for i in (0 .. t.len()).step_by(32 * 4) {
-//         let b = (key & 1) as u8;
-//         let mut r0 =
-//             u8x32::from_slice_unaligned(&t[i .. i+32]) ^
-//             ( * u8x32::from_slice_unaligned(&u[i .. i+32]));
-//         let mut r1 =
-//             u8x32::from_slice_unaligned(&t[i+32 .. i+64]) ^
-//             (b * u8x32::from_slice_unaligned(&u[i+32 .. i+64]));
-//         let mut r2 =
-//             u8x32::from_slice_unaligned(&t[i+64 .. i+96]) ^
-//             (b * u8x32::from_slice_unaligned(&u[i+64 .. i+96]));
-//         let mut r3 =
-//             u8x32::from_slice_unaligned(&t[i+96 .. i+128]) ^
-//             (b * u8x32::from_slice_unaligned(&u[i+96 .. i+128]));
-
-//         key >>= 1;
-//         r0.write_to_slice_unaligned(&mut t[i .. i+32]);
-//         r1.write_to_slice_unaligned(&mut t[i+32 .. i+64]);
-//         r2.write_to_slice_unaligned(&mut t[i+64 .. i+96]);
-//         r3.write_to_slice_unaligned(&mut t[i+96 .. i+128]);
-//     }
-// }
 
 
 #[cfg(test)]
@@ -295,7 +233,7 @@ mod tests {
         prng.fill_bytes(&mut a);
         let mut b = [0u8; 128*32];
         transpose256_u8_naif(&mut b, &a);
-        transpose_u8(&mut a);
+        transpose_u8(&mut a, 7);
         assert_eq!(&a[..], &b[..]);
 
     }
