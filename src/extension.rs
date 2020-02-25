@@ -5,11 +5,17 @@ use byteorder::{ByteOrder, LittleEndian};
 use packed_simd::u8x32;
 use rand_core::{CryptoRng, RngCore};
 
+/// Creates a mask from the most significant bit of each octet of x
+/// and returns a doubleword value/mask.
+/// See the [Intel Guide](<https://software.intel.com/en-us/cpp-compiler-developer-guide-and-reference-mm256-movemask-epi8>)
 #[inline]
-pub fn movemask8x32(x: u8x32) -> i32 {
+fn movemask8x32(x: u8x32) -> i32 {
     unsafe { _mm256_movemask_epi8(std::mem::transmute(x)) }
 }
 
+/// Interleave left:
+/// given as input 32 `l` octets indexed as [0, 1, 2, …, 31] and 32 `r` octets indexed as [32, 33, 34, … 63]
+/// returns 32 octets corresponding to the values of indices [0, 32, 1, … 15, 47].
 #[inline]
 fn interleave_left(l: u8x32, r: u8x32) -> u8x32 {
     shuffle!(
@@ -22,6 +28,9 @@ fn interleave_left(l: u8x32, r: u8x32) -> u8x32 {
     )
 }
 
+/// Interleave right:
+/// given as input 32 `l` octets indexed as [0, 1, 2, …, 31] and 32 `r` octets indexed as [32, 33, 34, … 63]
+/// returns 32 octets corresponding to the values f indices [16, 48, 17, 49, … 31, 63].
 #[inline]
 fn interleave_right(l: u8x32, r: u8x32) -> u8x32 {
     shuffle!(
@@ -88,6 +97,84 @@ fn transpose_u8(m: &mut [u8], rounds: usize) {
     }
 }
 
+///! Transpose (inplace) a matrix of \\((128 \times 256)\\) bits acting only on consecutive rows, via interleaving.
+///! The input matrix is represented as an array of \\(32 \cdot 128\\) `u8` elements.
+///!
+///! The transpose operation is composed of two fundamental components; a byte-level transpose
+///! and a bit-level transpose.
+///!
+///! Byte-level transpose
+///! --------------------
+///! To get an idea of how this works, let us consider the (smaller) \\(4 \times 8 \\) matrix \\(A\\) of `u8` elements,
+///! and define the following map:
+///! \\[
+///!   \varphi:
+///! \begin{pmatrix}
+///! a_{0, 0} & a_{0, 1} & a_{0, 2} & a_{0, 3} & a_{0, 4} & a_{0, 5} & a_{0, 6} & a_{0, 7}  \\\\
+///! a_{1, 0} & a_{1, 1} & a_{1, 2} & a_{1, 3} & a_{1, 4} & a_{1, 5} & a_{1, 6} & a_{1, 7}  \\\\ \hdashline
+///! a_{2, 0} & a_{2, 1} & a_{2, 2} & a_{2, 3} & a_{2, 4} & a_{2, 5} & a_{2, 6} & a_{2, 7}  \\\\
+///! a_{3, 0} & a_{3, 1} & a_{3, 2} & a_{3, 3} & a_{3, 4} & a_{3, 5} & a_{3, 6} & a_{3, 7}  \\\\
+///! \end{pmatrix}
+///! \mapsto
+///! \begin{pmatrix}
+///! a_{0, 0} & a_{2, 0} & a_{0, 1} & a_{2, 1} & a_{0, 2} & a_{2, 2} & a_{0, 3} & a_{2, 3}  \\\\
+///! a_{0, 4} & a_{2, 4} & a_{0, 5} & a_{2, 5} & a_{0, 6} & a_{2, 6} & a_{0, 7} & a_{2, 7}  \\\\
+///! a_{1, 0} & a_{3, 0} & a_{1, 1} & a_{3, 1} & a_{1, 2} & a_{3, 2} & a_{1, 3} & a_{3, 3}  \\\\
+///! a_{1, 4} & a_{3, 4} & a_{1, 5} & a_{3, 5} & a_{1, 6} & a_{3, 6} & a_{1, 7} & a_{3, 7}  \\\\
+///! \end{pmatrix}
+///! \\]
+///! Then, if we forget about dimensions and consider equality of elements in a matrix read
+///! left-to-right, top-to-bottom, \\(A^T \sim \varphi^2(A)\\).
+///! In fact, applying the same function again, we obtain:
+///!
+///! \\[
+///! \left(\begin{array}{cccc:cccc}
+///! a_{0, 0} & a_{1, 0} & a_{2, 0} & a_{3, 0} & a_{0, 1} & a_{1, 1} & a_{2, 1} & a_{3, 1}  \\\\
+///! a_{0, 2} & a_{1, 2} & a_{2, 2} & a_{3, 2} & a_{0, 3} & a_{1, 3} & a_{2, 3} & a_{3, 3}  \\\\
+///! a_{0, 4} & a_{1, 4} & a_{2, 4} & a_{3, 4} & a_{0, 5} & a_{1, 5} & a_{2, 5} & a_{3, 5}  \\\\
+///! a_{0, 6} & a_{1, 6} & a_{2, 6} & a_{3, 6} & a_{0, 7} & a_{1, 7} & a_{2, 7} & a_{3, 7}  \\\\
+///! \end{array} \right)
+///! \\]
+///! In general, given a matrix \\(A\\) with \\(n = 2^m\\) rows,  \\(\varphi^{m}(A) \sim A^T\\).
+///! Because the input matrix is represented as an array of \\(n\cdot m\\) `u8` elements,
+///! rearranging the dimension has zero cost.
+///! The code for this function use SIMD operations to work with rows of 32 bytes.
+///! This technique for transposing is not original: it's been illustrated in
+///! [previous papers](https://www.researchgate.net/publication/220952552_High-order_stencil_computations_on_multicore_clusters) forums, the intel guide,
+///! and even a [blogpost](https://fgiesen.wordpress.com/2013/08/29/simd-transposes-2/).
+///!
+///!
+///! Bit-level transpose
+///! -------------------
+///! If we consider the bit-level view, however, the first two rows have elements:
+///!
+///! \\[
+///!    \left(\begin{array}{c:c:c:c}
+///!     b_{0, 0, 0}, b_{0, 0, 1},
+///!     b_{0, 0, 2}, b_{0, 0, 3},
+///!     b_{0, 0, 4}, b_{0, 0, 5},
+///!     b_{0, 0, 6}, b_{0, 0, 7} &
+///!     b_{1, 0, 0}, \dots, b_{1, 0, 7} &
+///!     b_{2, 0, 0}, \dots, b_{2, 0, 7} &
+///!     b_{3, 0, 0}, \dots, b_{3, 0, 7} \\\\
+///!     b_{0, 1, 0}, b_{0, 1, 1}, b_{0, 1, 2}, b_{0,1, 3},
+///!     b_{0, 1, 4}, b_{0, 1, 5},
+///!     b_{0, 1, 6}, b_{0, 1, 7} &
+///!     b_{1, 1, 0}, \dots, b_{1, 1, 7} &
+///!     b_{2, 1, 0}, \dots, b_{2, 1, 7} &
+///!     b_{3, 1, 0}, \dots,  b_{3, 1, 7} \\\\
+///!     \vdots & \vdots & \vdots & \vdots
+///!     \end{array} \right).
+///! \\]
+///! where \\(a_{i, j} = \sum_{k=0}^7 2^k b_{i, j, k}\\).
+///! The AVX2 instruction [`_mm256_movemask_epi8`](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm256_movemask_epi8) comes in handy in this case:
+///! it takes as input 4 `u32` elements (as in the above) and outputs a `u8` element composed
+///! of the leading bits, i.e., given the first two rows as input, it outputs:
+///! \\([b_{0, 0, 0}, b_{1, 0, 0}, b_{2, 0, 0}, b_{3, 0, 0}, b_{0, 1, 0}, b_{1, 1, 0}, b_{2, 1, 0}, b_{3,1, 0}]\\).
+///!
+///! In order to transpose bit-wise, therefore, we transmute 4 `u8` into a `u32`,
+///! we do a movemask, and we left shift the batch of 4 `u32`. We repeat this 8 times.
+///! At the end, we have a (transposed) 256 bit row.
 pub fn transpose128(m: &mut [u8]) {
     // transpose byte-wise. We are left with a 256x128 byte matrix
     transpose_u8(m, 7);

@@ -1,6 +1,6 @@
 [package]
 name = "ot"
-version = "0.1.0"
+version = "0.0.1"
 authors = ["Michele Orrù <michele.orru@ens.fr>"]
 keywords = ["cryptography", "curve25519", "oblivious-transfer"]
 description = "SimpleOT from Orlandi and Chou in pure-Rust, using curve25519-dalek."
@@ -28,3 +28,7 @@ features = ["serde", "alloc"]
 [[bench]]
 name = "ot_benchmarks"
 harness = false
+
+[package.metadata.docs.rs]
+rustdoc-args = [ "--html-in-header", "doc/katex-header.html" ]
+
