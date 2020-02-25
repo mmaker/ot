@@ -6,20 +6,24 @@ keywords = ["cryptography", "curve25519", "oblivious-transfer"]
 description = "SimpleOT from Orlandi and Chou in pure-Rust, using curve25519-dalek."
 
 [dependencies]
-curve25519-dalek = "1"
-rand = "0.6.1"
+rand = "0.7.3"
+rand_core = "0.5.1"
 digest = "0.8.0"
 generic-array = "0.12.0"
 packed_simd = "0.3.1"
 byteorder = "1.2.7"
 aes-ctr = "0.3.0"
+serde = { version = "1.0",  features = ["derive"] }
 
 [dev-dependencies]
-criterion = "0.2"
+criterion = "0.3"
 sha3 = "0.8.1"
 
-[patch.crates-io]
-criterion = { git = "https://github.com/hdevalence/criterion.rs" }
+
+[dependencies.curve25519-dalek]
+version = "2.0.0"
+features = ["serde", "alloc"]
+
 
 [[bench]]
 name = "ot_benchmarks"

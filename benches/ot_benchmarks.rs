@@ -6,10 +6,9 @@ extern crate sha3;
 extern crate ot_dalek;
 
 use criterion::Criterion;
+use ot_dalek::{Receiver, Sender};
 use rand::{thread_rng, RngCore};
-use ot_dalek::{Sender, Receiver};
 use sha3::Sha3_256;
-
 
 fn bench_sender_new(c: &mut Criterion) {
     c.bench_function("sender setup", move |b| {
@@ -44,7 +43,6 @@ fn bench_receiver(c: &mut Criterion) {
     });
 }
 
-
 fn bench_transpose(c: &mut Criterion) {
     use ot_dalek::extension::transpose256;
 
@@ -59,7 +57,7 @@ fn bench_transpose(c: &mut Criterion) {
     });
 }
 
-criterion_group!{
+criterion_group! {
     name = benches;
     config = Criterion::default();
     targets = bench_sender_new, bench_sender_keys, bench_receiver, bench_transpose
