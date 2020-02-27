@@ -1,10 +1,10 @@
 [package]
-name = "ot"
+name = "oblivious-transfer"
 version = "0.0.1"
 authors = ["Michele Orrù <michele.orru@ens.fr>"]
 keywords = ["cryptography", "curve25519", "oblivious-transfer"]
 license = "MIT"
-description = "SimpleOT from Orlandi and Chou in pure-Rust, using curve25519-dalek."
+description = "SimpleOT from Orlandi and Chou in pure-Rust, using curve25519-dalek, with OT extensions."
 
 [dependencies]
 rand = "0.7.3"
